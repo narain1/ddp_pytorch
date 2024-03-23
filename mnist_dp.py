@@ -3,18 +3,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-import torch.distributed as dist
 from torchvision import datasets, transforms, models
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
-
-def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-
-def cleanup():
-    dist.destroy_process_group()
+from torch.utils.data import DataLoader
 
 class MNISTModel(nn.Module):
     def __init__(self):
@@ -38,37 +28,35 @@ def get_resnet():
     model.fc = nn.Linear(model.fc.in_features, 10)
     return model
 
-def train(rank, world_size):
-    setup(rank, world_size)
-    
+def train():
     transform = transforms.Compose([
                                     transforms.Resize(256),
                                     transforms.ToTensor(), 
                                     transforms.Normalize((0.1307,), (0.3081,)),
                                     ])
     dataset = datasets.MNIST('./data', train=True, download=True, transform=transform)
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
-    dataloader = DataLoader(dataset, sampler=sampler, batch_size=128)
+    dataloader = DataLoader(dataset, batch_size=128 * torch.cuda.device_count(), shuffle=True)
     
-    model = get_resnet().to(rank)
-    model = DDP(model, device_ids=[rank])
-    
+    model = get_resnet()
+    if torch.cuda.device_count() > 1:
+        print(f"Let's use {torch.cuda.device_count()} GPUs!")
+        # Wrap the model for DataParallel
+        model = nn.DataParallel(model)
+
+    model.to('cuda')
+
     optimizer = optim.Adam(model.parameters(), lr=0.01)
     
     for epoch in range(5):  # loop over the dataset multiple times
-        sampler.set_epoch(epoch)
         for batch_idx, (data, target) in enumerate(dataloader):
-            data, target = data.to(rank), target.to(rank)
+            data, target = data.cuda(), target.cuda()
             optimizer.zero_grad()
             output = model(data)
             loss = F.nll_loss(output, target)
             loss.backward()
             optimizer.step()
             if batch_idx % 100 == 0:
-                print(f'Rank {rank}, Epoch {epoch}, Batch {batch_idx}, Loss {loss.item()}')
-    
-    cleanup()
+                print(f'Epoch {epoch}, Batch {batch_idx}, Loss {loss.item()}')
 
 if __name__ == "__main__":
-    world_size = torch.cuda.device_count()
-    torch.multiprocessing.spawn(train, args=(world_size,), nprocs=world_size, join=True)
+    train()
