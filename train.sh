@@ -15,7 +15,7 @@
 module load mamba/latest
 source activate torch
 
-export CUDA_VISIBLE_DEVICES=1,2
+export CUDA_VISIBLE_DEVICES=0,1
 mamba list
 
 echo "executing data parallel"
